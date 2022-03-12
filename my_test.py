@@ -1,0 +1,27 @@
+from models.modules.resnet_architecture.mobile_resnet_generator import MobileResnetGenerator
+from models.networks import get_norm_layer
+import torch
+from torchviz import make_dot
+from torchsummary import summary
+norm = 'batch'
+norm_layer = get_norm_layer(norm_type=norm)
+
+net = MobileResnetGenerator(3, 3, ngf=8, norm_layer=norm_layer,
+                            dropout_rate=0.1, n_blocks=9)
+
+summary(net,(3,255,255))
+
+def get_model_size(model):
+    para_num = sum([p.numel() for p in model.parameters()])
+    # para_size: 参数个数 * 每个4字节(float32) / 1024 / 1024，单位为 MB
+    para_size = para_num * 4 / 1024 / 1024
+    return para_size
+
+
+# print(get_model_size(net))
+
+
+# x = torch.randn(1,3,256,156)
+# y = net(x)
+# g = make_dot(y)
+# g.render('espnet_model', view=False)
