@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 python distill.py --dataroot database/horse2zebra \
   --gpu_ids 6 \
+  --batch_size 4 \
   --distiller cycleganbest \
   --log_dir logs/cycle_gan/horse2zebra/distill_S12 \
   --real_stat_A_path real_stat/horse2zebra_A.npz \

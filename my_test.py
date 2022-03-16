@@ -6,7 +6,7 @@ from torchsummary import summary
 norm = 'batch'
 norm_layer = get_norm_layer(norm_type=norm)
 
-net = MobileResnetGenerator(3, 3, ngf=8, norm_layer=norm_layer,
+net = MobileResnetGenerator(3, 3, ngf=12, norm_layer=norm_layer,
                             dropout_rate=0.1, n_blocks=9)
 
 summary(net,(3,255,255))
@@ -17,6 +17,11 @@ def get_model_size(model):
     para_size = para_num * 4 / 1024 / 1024
     return para_size
 
+
+in_channels = [64, 128, 256, 256]*4
+print(in_channels)
+for idx, in_channel in enumerate(in_channels):
+    print(in_channel)
 
 # print(get_model_size(net))
 

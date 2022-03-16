@@ -8,6 +8,7 @@ from torch.nn import DataParallel
 
 from torchprofile import profile_macs
 import models.modules.loss
+from distillers.review.reviewkd import  ABF
 from utils.image_pool import ImagePool
 from data import create_eval_dataloader
 from metric import create_metric_models
@@ -174,6 +175,19 @@ class BaseCycleganBestDistiller(BaseModel):
         self.student_steps = 0
         self.student_epoch = 0
         self.student_dataloader = create_dataloader(self.opt)
+        # 知识审查机制
+        self.abfs = self.build_review_connector()
+        self.shapes = [64]*4
+        self.out_shapes = [64]*4
+
+    def build_review_connector(self):
+        abfs = nn.ModuleList()
+        in_channels = [self.opt.student_ngf*4] * 4
+        out_channels = [self.opt.teacher_ngf*4] * 4
+        mid_channel = min(512, in_channels[-1])
+        for idx, in_channel in enumerate(in_channels):
+            abfs.append(ABF(in_channel, mid_channel, out_channels[idx], idx < len(in_channels) - 1))
+        return abfs[::-1]
 
     def setup(self, opt, verbose=True):
         self.schedulers = [networks.get_scheduler(optimizer, opt) for optimizer in self.optimizers]

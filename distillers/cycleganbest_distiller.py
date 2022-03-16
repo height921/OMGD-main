@@ -15,12 +15,16 @@ from models.modules import pytorch_ssim
 from utils.logger import Logger
 import time
 
+from .review.reviewkd import hcl
+
+
 class CycleganBestDistiller(BaseCycleganBestDistiller):
     @staticmethod
     def modify_commandline_options(parser, is_train):
         assert is_train
         parser = super(CycleganBestDistiller, CycleganBestDistiller).modify_commandline_options(parser, is_train)
-        parser.add_argument('--AGD_weights', type=str, default='1e1, 1e4, 1e1, 1e-5', help='weights for losses in AGD mode')
+        parser.add_argument('--AGD_weights', type=str, default='1e1, 1e4, 1e1, 1e-5',
+                            help='weights for losses in AGD mode')
         parser.add_argument('--n_dis', type=int, default=1, help='iter time for student before update teacher')
         return parser
 
@@ -73,23 +77,37 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_G_cycle_A + self.loss_G_cycle_B + self.loss_G_idt_A + self.loss_G_idt_B
         self.loss_G.backward()
 
+    # def calc_CD_loss(self):
+    #     losses = []
+    #     mapping_layers = self.mapping_layers[self.opt.teacher_netG]
+    #     # self.netAS是学生和教师网络连接1x1conv的集合
+    #     for i, netA in enumerate(self.netAs):
+    #         n = mapping_layers[i]
+    #         netA_replicas = replicate(netA.cuda(), self.gpu_ids)
+    #         Sacts = parallel_apply(netA_replicas,
+    #                                    tuple([self.Sacts[key] for key in sorted(self.Sacts.keys()) if n in key]))
+    #         Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys()) if n in key]
+    #         for Sact, Tact in zip(Sacts, Tacts):
+    #             source, target = Sact, Tact.detach()
+    #             source = source.mean(dim=(2, 3), keepdim=False)
+    #             target = target.mean(dim=(2, 3), keepdim=False)
+    #             loss = torch.mean(torch.pow(source - target, 2))
+    #             losses.append(loss)
+    #     return sum(losses)
+
     def calc_CD_loss(self):
-        losses = []
-        mapping_layers = self.mapping_layers[self.opt.teacher_netG]
-        # self.netAS是学生和教师网络连接1x1conv的集合
-        for i, netA in enumerate(self.netAs):
-            n = mapping_layers[i]
-            netA_replicas = replicate(netA.cuda(), self.gpu_ids)
-            Sacts = parallel_apply(netA_replicas,
-                                       tuple([self.Sacts[key] for key in sorted(self.Sacts.keys()) if n in key]))
-            Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys()) if n in key]
-            for Sact, Tact in zip(Sacts, Tacts):
-                source, target = Sact, Tact.detach()
-                source = source.mean(dim=(2, 3), keepdim=False)
-                target = target.mean(dim=(2, 3), keepdim=False)
-                loss = torch.mean(torch.pow(source - target, 2))
-                losses.append(loss)
-        return sum(losses)
+        results = []
+        Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys())]
+        Sacts = [self.Tacts[key] for key in sorted(self.Sacts.keys(), reverse=True)]
+        x = Sacts
+        out_features, res_features = self.abfs[0](x[0], out_shape=self.out_shapes[0])
+        results.append(out_features)
+        for features, abf, shape, out_shape in zip(x[1:], self.abfs[1:], self.shapes[1:], self.out_shapes[1:]):
+            out_features, res_features = abf(features, res_features, shape, out_shape)
+            results.insert(0, out_features)
+
+        feature_kd_loss = hcl(out_features, Tacts)
+        return feature_kd_loss
 
     def backward_G_Student(self):
         self.fake = self.netG_teacher_A(self.real_A)
@@ -118,7 +136,7 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
     def gram(self, x):
         # 格拉姆矩阵
         (bs, ch, h, w) = x.size()
-        f = x.view(bs, ch, w*h)
+        f = x.view(bs, ch, w * h)
         f_T = f.transpose(1, 2)
         G = f.bmm(f_T) / (ch * h * w)
         return G
@@ -127,7 +145,8 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         self.forward()
         self.optimizer_D_teacher.zero_grad()
         self.optimizer_G_teacher.zero_grad()
-        self.set_requires_grad([self.netD_teacher_A, self.netD_teacher_B], False)  # Ds require no gradients when optimizing Gs
+        self.set_requires_grad([self.netD_teacher_A, self.netD_teacher_B],
+                               False)  # Ds require no gradients when optimizing Gs
         self.backward_G_Teacher()  # calculate gradients for G_A and G_B
         self.optimizer_G_teacher.step()  # update G_A and G_B's weights
         # D_A and D_B
@@ -148,22 +167,27 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
                 self.optimizer_G_student.step()
                 if self.student_steps % self.opt.print_freq == 0:
                     losses = self.get_current_losses()
-                    self.logger.print_current_errors(self.student_epoch, self.student_steps, losses, time.time() - iter_start_time)
+                    self.logger.print_current_errors(self.student_epoch, self.student_steps, losses,
+                                                     time.time() - iter_start_time)
                 if self.student_steps % self.opt.save_latest_freq == 0:
                     start_time = time.time()
                     metrics = self.evaluate_student_model(self.student_steps)
-                    self.logger.print_current_metrics(self.student_epoch, self.student_steps, metrics, time.time() - start_time)
+                    self.logger.print_current_metrics(self.student_epoch, self.student_steps, metrics,
+                                                      time.time() - start_time)
                     self.save_student_networks('lastet')
-                    self.logger.print_info('Saving the latest student model (epoch %d, total_steps %d)' % (self.student_epoch, self.student_steps))
+                    self.logger.print_info('Saving the latest student model (epoch %d, total_steps %d)' % (
+                        self.student_epoch, self.student_steps))
                     if self.is_best:
                         self.save_student_networks('iter%d' % self.student_steps)
             if self.student_epoch % self.opt.save_epoch_freq == 0 or epoch == self.opt.n_dis * self.opt.save_epoch_freq - 1:
                 start_time = time.time()
                 metrics = self.evaluate_student_model(self.student_steps)
-                self.logger.print_current_metrics(self.student_epoch, self.student_steps, metrics, time.time() - start_time)
+                self.logger.print_current_metrics(self.student_epoch, self.student_steps, metrics,
+                                                  time.time() - start_time)
                 self.save_student_networks('lastet')
                 self.logger.print_info(
-                    'Saving the student model at the end of epoch %d, iters %d' % (self.student_epoch, self.student_steps))
+                    'Saving the student model at the end of epoch %d, iters %d' % (
+                        self.student_epoch, self.student_steps))
                 self.save_student_networks(self.student_epoch)
 
     def test_single_side(self, direction):
@@ -259,5 +283,3 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         latest_filename = 'latest_net_G_teacher_A.pth' if self.opt.direction == 'AtoB' else 'latest_net_G_teacher_B.pth'
         util.load_network(self.netG_teacher_A, os.path.join(self.save_dir, 'teacher', latest_filename))
         self.netG_teacher_A.train()
-
-
