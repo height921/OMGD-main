@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 python distill.py --dataroot database/horse2zebra \
-  --gpu_ids 0 \
+  --gpu_ids 1 \
   --distiller cycleganbest \
   --log_dir logs/cycle_gan/horse2zebra/distill_S16 \
   --real_stat_A_path real_stat/horse2zebra_A.npz \

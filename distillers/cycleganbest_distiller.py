@@ -131,6 +131,10 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         if self.opt.lambda_CD:
             self.loss_G_CD = self.calc_CD_loss() * self.opt.lambda_CD
             self.loss_G_student += self.loss_G_CD
+        # 判别器对学生生成图片的损失函数
+        if self.opt.lambda_D_S:
+            self.loss_G_D_S = self.criterionGAN(self.netD_teacher_A(self.Sfake), True)* self.opt.lambda_D_S
+            self.loss_G_student += self.loss_G_D_S
         self.loss_G_student.backward()
 
     def gram(self, x):

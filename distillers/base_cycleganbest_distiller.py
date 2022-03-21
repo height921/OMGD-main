@@ -68,6 +68,9 @@ class BaseCycleganBestDistiller(BaseModel):
 
         parser.add_argument('--lambda_CD', type=float, default=0,
                             help='weights for the intermediate activation distillation loss')
+        parser.add_argument('--lambda_D_S', type=float, default=0,
+                            help='weights for the discriminator distillation loss')
+
         parser.add_argument('--lambda_recon', type=float, default=100,
                             help='weights for the reconstruction loss.')
         parser.add_argument('--lambda_gan', type=float, default=1,
@@ -90,7 +93,7 @@ class BaseCycleganBestDistiller(BaseModel):
         super(BaseCycleganBestDistiller, self).__init__(opt)
         self.loss_names = ['D_A', 'G_A', 'G_cycle_A', 'G_idt_A',
                            'D_B', 'G_B', 'G_cycle_B', 'G_idt_B',
-                           'G_SSIM', 'G_style', 'G_feature', 'G_tv', 'G_CD']
+                           'G_SSIM', 'G_style', 'G_feature', 'G_tv', 'G_CD','G_D_S']
         self.optimizers = []
         self.image_paths = []
         self.visual_names_A = ['real_A', 'fake_B', 'rec_A']
