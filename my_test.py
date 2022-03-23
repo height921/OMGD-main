@@ -3,11 +3,21 @@ from models.networks import get_norm_layer
 import torch
 from torchviz import make_dot
 from torchsummary import summary
-norm = 'batch'
+norm = 'instance'
 norm_layer = get_norm_layer(norm_type=norm)
+#
+# net = MobileResnetGenerator(3, 3, ngf=12, norm_layer=norm_layer,
+#                             dropout_rate=0.1, n_blocks=9)
+#
+# summary(net,(3,255,255))
 
-net = MobileResnetGenerator(3, 3, ngf=12, norm_layer=norm_layer,
-                            dropout_rate=0.1, n_blocks=9)
+
+from models.modules.discriminators import NLayerDiscriminator
+
+net = NLayerDiscriminator(3, 128, 3, norm_layer=norm_layer)
+
+for n,m in net.named_modules():
+    print("modele:"+n)
 
 summary(net,(3,255,255))
 
@@ -18,10 +28,10 @@ def get_model_size(model):
     return para_size
 
 
-in_channels = [64, 128, 256, 256]*4
-print(in_channels)
-for idx, in_channel in enumerate(in_channels):
-    print(in_channel)
+# in_channels = [64, 128, 256, 256]*4
+# print(in_channels)
+# for idx, in_channel in enumerate(in_channels):
+#     print(in_channel)
 
 # print(get_model_size(net))
 

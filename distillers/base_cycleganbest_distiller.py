@@ -8,7 +8,7 @@ from torch.nn import DataParallel
 
 from torchprofile import profile_macs
 import models.modules.loss
-from distillers.review.reviewkd import  ABF
+from distillers.review.reviewkd import ABF
 from utils.image_pool import ImagePool
 from data import create_eval_dataloader
 from metric import create_metric_models
@@ -24,7 +24,8 @@ class BaseCycleganBestDistiller(BaseModel):
     @staticmethod
     def modify_commandline_options(parser, is_train):
         assert is_train
-        parser = super(BaseCycleganBestDistiller, BaseCycleganBestDistiller).modify_commandline_options(parser, is_train)
+        parser = super(BaseCycleganBestDistiller, BaseCycleganBestDistiller).modify_commandline_options(parser,
+                                                                                                        is_train)
         parser.add_argument('--restore_teacher_G_A_path', type=str, default=None,
                             help='the path to restore the generator G_A')
         parser.add_argument('--restore_teacher_D_A_path', type=str, default=None,
@@ -66,10 +67,15 @@ class BaseCycleganBestDistiller(BaseModel):
                             choices=['l1', 'l2', 'smooth_l1', 'vgg'],
                             help='the type of the reconstruction loss')
 
+        parser.add_argument('--is_rw_cd', action='store_true', help='Use review knowledge distill')
+
         parser.add_argument('--lambda_CD', type=float, default=0,
                             help='weights for the intermediate activation distillation loss')
         parser.add_argument('--lambda_D_S', type=float, default=0,
                             help='weights for the discriminator distillation loss')
+
+        parser.add_argument('--lambda_FEA', type=float, default=0,
+                            help='weights for the discriminator last layer distillation loss')
 
         parser.add_argument('--lambda_recon', type=float, default=100,
                             help='weights for the reconstruction loss.')
@@ -81,7 +87,8 @@ class BaseCycleganBestDistiller(BaseModel):
 
         parser.add_argument('--project', type=str, default=None, help='the project name of this trail')
         parser.add_argument('--name', type=str, default=None, help='the name of this trail')
-        parser.add_argument('--pool_size', type=int, default=50, help='the size of image buffer that stores previously generated images')
+        parser.add_argument('--pool_size', type=int, default=50,
+                            help='the size of image buffer that stores previously generated images')
         parser.set_defaults(norm='instance', dataset_mode='unaligned',
                             batch_size=1, ndf=64, gan_mode='lsgan',
                             nepochs=100, nepochs_decay=100, save_epoch_freq=20)
@@ -93,7 +100,7 @@ class BaseCycleganBestDistiller(BaseModel):
         super(BaseCycleganBestDistiller, self).__init__(opt)
         self.loss_names = ['D_A', 'G_A', 'G_cycle_A', 'G_idt_A',
                            'D_B', 'G_B', 'G_cycle_B', 'G_idt_B',
-                           'G_SSIM', 'G_style', 'G_feature', 'G_tv', 'G_CD','G_D_S']
+                           'G_SSIM', 'G_style', 'G_feature', 'G_tv', 'G_CD', 'G_D_S', 'G_FEA']
         self.optimizers = []
         self.image_paths = []
         self.visual_names_A = ['real_A', 'fake_B', 'rec_A']
@@ -128,14 +135,19 @@ class BaseCycleganBestDistiller(BaseModel):
         self.netD_teacher_B.train()
 
         if self.opt.lambda_CD:
-            self.mapping_layers = {'mobile_resnet_9blocks':['model.9',  # 4 * ngf
-                                                            'model.12',
-                                                            'model.15',
-                                                            'model.18']}
+            self.mapping_layers = {'mobile_resnet_9blocks': ['model.9',  # 4 * ngf
+                                                             'model.12',
+                                                             'model.15',
+                                                             'model.18']}
         self.netAs = []
         self.Tacts, self.Sacts = {}, {}
+        # 判别器对生成图片的蒸馏损失
+        if self.opt.lambda_FEA:
+            self.fea_mapping_layers = {'n_layers': ['model.10']}
+        self.Dacts = {}
         G_params = [self.netG_student.parameters()]
-        if self.opt.lambda_CD:
+        # is_rw_cd指的是中间特征蒸馏是知识审查机制
+        if self.opt.lambda_CD and not self.opt.is_rw_cd:
             for i, n in enumerate(self.mapping_layers[self.opt.teacher_netG]):
                 ft, fs = self.opt.teacher_ngf, self.opt.student_ngf
                 if 'resnet' in self.opt.teacher_netG:
@@ -161,9 +173,11 @@ class BaseCycleganBestDistiller(BaseModel):
 
         self.optimizer_G_student = torch.optim.Adam(itertools.chain(*G_params), lr=opt.lr, betas=(opt.beta1, 0.999))
         self.optimizer_G_teacher = torch.optim.Adam(itertools.chain(self.netG_teacher_A.parameters(),
-                                                                    self.netG_teacher_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
+                                                                    self.netG_teacher_B.parameters()), lr=opt.lr,
+                                                    betas=(opt.beta1, 0.999))
         self.optimizer_D_teacher = torch.optim.Adam(itertools.chain(self.netD_teacher_A.parameters(),
-                                                                    self.netD_teacher_B.parameters()), lr=opt.lr, betas=(opt.beta1, 0.999))
+                                                                    self.netD_teacher_B.parameters()), lr=opt.lr,
+                                                    betas=(opt.beta1, 0.999))
         self.optimizers.append(self.optimizer_G_student)
         self.optimizers.append(self.optimizer_D_teacher)
         self.optimizers.append(self.optimizer_G_teacher)
@@ -179,14 +193,15 @@ class BaseCycleganBestDistiller(BaseModel):
         self.student_epoch = 0
         self.student_dataloader = create_dataloader(self.opt)
         # 知识审查机制
-        self.abfs = self.build_review_connector()
-        self.shapes = [64]*4
-        self.out_shapes = [64]*4
+        if self.opt.lambda_CD and self.opt.is_rw_cd:
+            self.abfs = self.build_review_connector().to(device=self.device)
+            self.shapes = [64] * 4
+            self.out_shapes = [64] * 4
 
     def build_review_connector(self):
         abfs = nn.ModuleList()
-        in_channels = [self.opt.student_ngf*4] * 4
-        out_channels = [self.opt.teacher_ngf*4] * 4
+        in_channels = [self.opt.student_ngf * 4] * 4
+        out_channels = [self.opt.teacher_ngf * 4] * 4
         mid_channel = min(512, in_channels[-1])
         for idx, in_channel in enumerate(in_channels):
             abfs.append(ABF(in_channel, mid_channel, out_channels[idx], idx < len(in_channels) - 1))
@@ -211,6 +226,8 @@ class BaseCycleganBestDistiller(BaseModel):
 
             add_hook(self.netG_teacher_A, self.Tacts, self.mapping_layers[self.opt.teacher_netG])
             add_hook(self.netG_student, self.Sacts, self.mapping_layers[self.opt.teacher_netG])
+            if self.opt.lambda_FEA>0:
+                add_hook(self.netD_teacher_A, self.Dacts, self.fea_mapping_layers[self.opt.netD])
 
     def build_feature_connector(self, t_channel, s_channel):
         C = [nn.Conv2d(s_channel, t_channel, kernel_size=1, stride=1, padding=0, bias=False),
@@ -354,6 +371,11 @@ class BaseCycleganBestDistiller(BaseModel):
             save_path = os.path.join(student_save_dir, save_filename)
             self.save_net(net, save_path)
 
+        if self.abfs is not None:
+            save_filename = '%s_net_%s.pth' % (epoch, 'abfs')
+            save_path = os.path.join(student_save_dir, save_filename)
+            self.save_net(net, save_path)
+
 
     def evaluate_model(self, step):
         raise NotImplementedError
@@ -364,8 +386,8 @@ class BaseCycleganBestDistiller(BaseModel):
 
     def profile(self, config=None, verbose=True):
         for name in self.model_names:
-            if hasattr(self,name) and 'D' not in name:
-                netG = getattr(self,name)
+            if hasattr(self, name) and 'D' not in name:
+                netG = getattr(self, name)
                 if isinstance(netG, nn.DataParallel):
                     netG = netG.module
                 if config is not None:

@@ -77,28 +77,29 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_G_cycle_A + self.loss_G_cycle_B + self.loss_G_idt_A + self.loss_G_idt_B
         self.loss_G.backward()
 
-    # def calc_CD_loss(self):
-    #     losses = []
-    #     mapping_layers = self.mapping_layers[self.opt.teacher_netG]
-    #     # self.netAS是学生和教师网络连接1x1conv的集合
-    #     for i, netA in enumerate(self.netAs):
-    #         n = mapping_layers[i]
-    #         netA_replicas = replicate(netA.cuda(), self.gpu_ids)
-    #         Sacts = parallel_apply(netA_replicas,
-    #                                    tuple([self.Sacts[key] for key in sorted(self.Sacts.keys()) if n in key]))
-    #         Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys()) if n in key]
-    #         for Sact, Tact in zip(Sacts, Tacts):
-    #             source, target = Sact, Tact.detach()
-    #             source = source.mean(dim=(2, 3), keepdim=False)
-    #             target = target.mean(dim=(2, 3), keepdim=False)
-    #             loss = torch.mean(torch.pow(source - target, 2))
-    #             losses.append(loss)
-    #     return sum(losses)
-
     def calc_CD_loss(self):
+        losses = []
+        mapping_layers = self.mapping_layers[self.opt.teacher_netG]
+        # self.netAS是学生和教师网络连接1x1conv的集合
+        for i, netA in enumerate(self.netAs):
+            n = mapping_layers[i]
+            netA_replicas = replicate(netA.cuda(), self.gpu_ids)
+            Sacts = parallel_apply(netA_replicas,
+                                   tuple([self.Sacts[key] for key in sorted(self.Sacts.keys()) if n in key]))
+            Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys()) if n in key]
+            for Sact, Tact in zip(Sacts, Tacts):
+                source, target = Sact, Tact.detach()
+                source = source.mean(dim=(2, 3), keepdim=False)
+                target = target.mean(dim=(2, 3), keepdim=False)
+                loss = torch.mean(torch.pow(source - target, 2))
+                losses.append(loss)
+        return sum(losses)
+
+    # reviewKD
+    def calc_RW_CD_loss(self):
         results = []
         Tacts = [self.Tacts[key] for key in sorted(self.Tacts.keys())]
-        Sacts = [self.Tacts[key] for key in sorted(self.Sacts.keys(), reverse=True)]
+        Sacts = [self.Sacts[key] for key in sorted(self.Sacts.keys(), reverse=True)]
         x = Sacts
         out_features, res_features = self.abfs[0](x[0], out_shape=self.out_shapes[0])
         results.append(out_features)
@@ -106,7 +107,7 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
             out_features, res_features = abf(features, res_features, shape, out_shape)
             results.insert(0, out_features)
 
-        feature_kd_loss = hcl(out_features, Tacts)
+        feature_kd_loss = hcl(results, Tacts)
         return feature_kd_loss
 
     def backward_G_Student(self):
@@ -129,13 +130,47 @@ class CycleganBestDistiller(BaseCycleganBestDistiller):
         self.loss_G_tv = self.lambda_tv * (diff_i + diff_j)
         self.loss_G_student = self.loss_G_SSIM + self.loss_G_style + self.loss_G_feature + self.loss_G_tv
         if self.opt.lambda_CD:
-            self.loss_G_CD = self.calc_CD_loss() * self.opt.lambda_CD
+            if self.opt.is_rw_cd:
+                self.loss_G_CD = self.calc_RW_CD_loss() * self.opt.lambda_CD
+            else:
+                self.loss_G_CD = self.calc_CD_loss() * self.opt.lambda_CD
             self.loss_G_student += self.loss_G_CD
         # 判别器对学生生成图片的损失函数
         if self.opt.lambda_D_S:
-            self.loss_G_D_S = self.criterionGAN(self.netD_teacher_A(self.Sfake), True)* self.opt.lambda_D_S
+            self.loss_G_D_S = self.criterionGAN(self.netD_teacher_A(self.Sfake), True) * self.opt.lambda_D_S
             self.loss_G_student += self.loss_G_D_S
+        # 判别器最后一层对生成图片的损失函数
+        if self.opt.lambda_FEA:
+            self.loss_G_FEA = self.calc_FEA_loss() * self.opt.lambda_FEA
+            self.loss_G_student += self.loss_G_FEA
         self.loss_G_student.backward()
+
+    def calc_FEA_loss(self):
+        mapping_layers = self.fea_mapping_layers[self.opt.netD]
+        self.netD_teacher_A(self.fake)
+        # 这里深拷贝出现了问题，所以为了测试代码，先不写成通用式的
+        Tact = None
+        key = ''
+        for l in mapping_layers:
+            for k in self.Dacts.keys():
+                if l in k:
+                    Tact = self.Dacts[k].detach()
+                    key= k
+
+        self.netD_teacher_A(self.Sfake)
+        Sact = self.Dacts[key]
+        fea_loss = torch.norm(Tact - Sact, 2)
+        return fea_loss
+        # DTacts = copy.deepcopy(self.Dacts)
+        # self.netD_teacher_A(self.Sfake)
+        # DSacts = self.Dacts
+        # fea_loss = 0
+        # for l in mapping_layers:
+        #     Tacts = [DTacts[key] for key in sorted(DTacts.keys()) if l in key]
+        #     Sacts = [DSacts[key] for key in sorted(DSacts.keys()) if l in key]
+        #     for Sact, Tact in zip(Sacts, Tacts):
+        #         fea_loss += torch.norm(Tact - Sact, 2)
+        # return fea_loss
 
     def gram(self, x):
         # 格拉姆矩阵

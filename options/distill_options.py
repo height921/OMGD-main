@@ -63,6 +63,8 @@ class DistillOptions(BaseOptions):
         parser.add_argument('--eval_batch_size', type=int, default=1, help='the evaluation batch size')
         parser.add_argument('--real_stat_path', type=str,
                             help='the path to load the ground-truth images information to compute FID.')
+        parser.add_argument('--checkpoints_path', type=str,
+                            help='the path to load the pre-trained model.')
         return parser
 
     def gather_options(self):
