@@ -192,6 +192,7 @@ class BaseCycleganBestDistiller(BaseModel):
         self.student_steps = 0
         self.student_epoch = 0
         self.student_dataloader = create_dataloader(self.opt)
+        self.abfs = None
         # 知识审查机制
         if self.opt.lambda_CD and self.opt.is_rw_cd:
             self.abfs = self.build_review_connector().to(device=self.device)
@@ -226,7 +227,7 @@ class BaseCycleganBestDistiller(BaseModel):
 
             add_hook(self.netG_teacher_A, self.Tacts, self.mapping_layers[self.opt.teacher_netG])
             add_hook(self.netG_student, self.Sacts, self.mapping_layers[self.opt.teacher_netG])
-            if self.opt.lambda_FEA>0:
+            if self.opt.lambda_FEA > 0:
                 add_hook(self.netD_teacher_A, self.Dacts, self.fea_mapping_layers[self.opt.netD])
 
     def build_feature_connector(self, t_channel, s_channel):
@@ -311,6 +312,8 @@ class BaseCycleganBestDistiller(BaseModel):
             for i, netA in enumerate(self.netAs):
                 path = '%s-%d.pth' % (self.opt.restore_A_path, i)
                 util.load_network(netA, path, verbose)
+        if self.opt.restore_abfs_path is not None:
+            util.load_network(self.abfs, self.opt.restore_abfs_path, verbose)
         if self.opt.restore_O_path is not None:
             for i, optimizer in enumerate(self.optimizers):
                 path = '%s-%d.pth' % (self.opt.restore_O_path, i)
@@ -372,10 +375,10 @@ class BaseCycleganBestDistiller(BaseModel):
             self.save_net(net, save_path)
 
         if self.abfs is not None:
+            net_abfs = getattr(self, 'abfs')
             save_filename = '%s_net_%s.pth' % (epoch, 'abfs')
             save_path = os.path.join(student_save_dir, save_filename)
-            self.save_net(net, save_path)
-
+            self.save_net(net_abfs, save_path)
 
     def evaluate_model(self, step):
         raise NotImplementedError
